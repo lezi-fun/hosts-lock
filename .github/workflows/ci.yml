@@ -1,0 +1,48 @@
+name: CI - Build and Test
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+            arch: x64
+          - os: ubuntu-latest
+            platform: linux
+            arch: x64
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Configure CMake
+      run: |
+        cd ${{ matrix.platform }}
+        mkdir -p build && cd build
+        cmake ..
+
+    - name: Build
+      run: |
+        cd ${{ matrix.platform }}/build
+        if [ "${{ matrix.platform }}" = "windows" ]; then
+          cmake --build . --config Release
+        else
+          make -j$(nproc)
+        fi
+
+    - name: Verify binaries
+      run: |
+        if [ "${{ matrix.platform }}" = "windows" ]; then
+          ls -la ${{ matrix.platform }}/build/bin/*.exe
+        else
+          ls -la ${{ matrix.platform }}/build/bin/
+          file ${{ matrix.platform }}/build/bin/* | head -10
+        fi

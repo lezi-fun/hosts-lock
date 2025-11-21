@@ -1,0 +1,154 @@
+name: Build and Release Multi-Platform
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows builds
+          - os: windows-latest
+            platform: windows
+            arch: x64
+            artifact_name: network-tools-windows-x64
+          - os: windows-latest
+            platform: windows  
+            arch: x86
+            artifact_name: network-tools-windows-x86
+
+          # Linux builds
+          - os: ubuntu-latest
+            platform: linux
+            arch: x64
+            artifact_name: network-tools-linux-x64
+          - os: ubuntu-latest
+            platform: linux
+            arch: arm64
+            artifact_name: network-tools-linux-arm64
+          - os: ubuntu-latest
+            platform: linux
+            arch: armv7
+            artifact_name: network-tools-linux-armv7
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup build environment
+      run: |
+        echo "Building for ${{ matrix.platform }} (${{ matrix.arch }})"
+        mkdir -p build
+
+    - name: Install cross-compilation tools (Linux ARM)
+      if: matrix.platform == 'linux' && (matrix.arch == 'arm64' || matrix.arch == 'armv7')
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+        sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
+
+    - name: Configure CMake
+      run: |
+        cd ${{ matrix.platform }}
+        mkdir -p build && cd build
+        
+        # Windows configurations
+        if [ "${{ matrix.platform }}" = "windows" ]; then
+          if [ "${{ matrix.arch }}" = "x86" ]; then
+            cmake -A Win32 ..
+          else
+            cmake -A x64 ..
+          fi
+        
+        # Linux configurations  
+        else
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            cmake -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ ..
+          elif [ "${{ matrix.arch }}" = "armv7" ]; then
+            cmake -DCMAKE_C_COMPILER=arm-linux-gnueabihf-gcc -DCMAKE_CXX_COMPILER=arm-linux-gnueabihf-g++ ..
+          else
+            cmake ..
+          fi
+        fi
+
+    - name: Build
+      run: |
+        cd ${{ matrix.platform }}/build
+        if [ "${{ matrix.platform }}" = "windows" ]; then
+          cmake --build . --config Release
+        else
+          make -j$(nproc)
+        fi
+
+    - name: Create package directory
+      run: |
+        mkdir -p ${{ matrix.artifact_name }}
+        
+        # Copy executables
+        if [ "${{ matrix.platform }}" = "windows" ]; then
+          cp ${{ matrix.platform }}/build/bin/*.exe ${{ matrix.artifact_name }}/
+        else
+          cp ${{ matrix.platform }}/build/bin/* ${{ matrix.artifact_name }}/
+          chmod +x ${{ matrix.artifact_name }}/*
+        fi
+        
+        # Add README
+        cat > ${{ matrix.artifact_name }}/README.md << EOF
+        Network Tools - ${{ matrix.platform }} ${{ matrix.arch }}
+        
+        Programs included:
+        - lock: Add hosts blocking
+        - unlock: Remove hosts blocking
+        - lunch-lock: Auto-elevate lock tool
+        - lunch-unlock: Auto-elevate unlock tool
+        
+        Build: ${{ github.run_id }}
+        Date: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        EOF
+
+    - name: Create archive
+      run: |
+        if [ "${{ matrix.platform }}" = "windows" ]; then
+          7z a ${{ matrix.artifact_name }}.zip ${{ matrix.artifact_name }}/*
+        else
+          tar -czf ${{ matrix.artifact_name }}.tar.gz ${{ matrix.artifact_name }}/
+        fi
+
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.artifact_name }}
+        path: ${{ matrix.artifact_name }}.*
+        retention-days: 7
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'release'
+    
+    steps:
+    - name: Download all build artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Display structure of downloaded files
+      run: ls -R artifacts
+
+    - name: Upload assets to release
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        for asset in artifacts/*/*; do
+          if [ -f "$asset" ]; then
+            echo "Uploading $asset"
+            asset_name=$(basename $asset)
+            gh release upload ${{ github.event.release.tag_name }} "$asset" --clobber
+          fi
+        done
